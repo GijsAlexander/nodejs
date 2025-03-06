@@ -1,0 +1,98 @@
+// Backend - server.js
+const express = require("express");
+const cors = require("cors");
+const bodyParser = require("body-parser");
+const { exec } = require("child_process");
+const axios = require("axios");
+const fs = require("fs");
+const nodemailer = require("nodemailer");
+const { Parser } = require("json2csv");
+
+const app = express();
+const PORT = 5000;
+
+app.use(cors());
+app.use(bodyParser.json());
+
+app.post("/api/scan", async (req, res) => {
+  const { url, email } = req.body;
+  if (!url) {
+    return res.status(400).json({ error: "No URL provided" });
+  }
+
+  console.log(`Starting GDPR compliance scan for: ${url}`);
+
+  try {
+    // OWASP ZAP Scan
+    const zapScan = await new Promise((resolve, reject) => {
+      exec(`zap-cli quick-scan ${url}`, (error, stdout, stderr) => {
+        if (error) {
+          console.error(`Error executing scan: ${stderr}`);
+          reject("Scan failed");
+        }
+        resolve(stdout);
+      });
+    });
+
+    // Privacy Badger API (Simulation)
+    const privacyBadgerResults = await axios.get(`https://privacybadger.org/api/tracker-report?url=${url}`)
+      .then(response => response.data)
+      .catch(error => {
+        console.error("Error fetching Privacy Badger data", error);
+        return [];
+      });
+
+    // Simulated results
+    const results = [
+      { issue: "Missing Cookie Consent Banner", severity: "High", recommendation: "Implement a GDPR-compliant consent banner." },
+      { issue: "Tracking Cookies Detected", severity: "Medium", recommendation: "Review and limit third-party tracking cookies." },
+      { issue: "No Privacy Policy Found", severity: "Low", recommendation: "Ensure a clear privacy policy is accessible on the site." },
+      ...privacyBadgerResults.map(tracker => ({
+        issue: `Tracker detected: ${tracker.name}`,
+        severity: "Medium",
+        recommendation: "Review tracker and ensure compliance."
+      }))
+    ];
+
+    // Send email notification if email is provided
+    if (email) {
+      const transporter = nodemailer.createTransport({
+        service: "gmail",
+        auth: { user: "your-email@gmail.com", pass: "your-password" }
+      });
+
+      const mailOptions = {
+        from: "your-email@gmail.com",
+        to: email,
+        subject: "GDPR Compliance Scan Report",
+        text: JSON.stringify(results, null, 2)
+      };
+
+      transporter.sendMail(mailOptions, (error, info) => {
+        if (error) {
+          console.error("Error sending email:", error);
+        } else {
+          console.log("Email sent:", info.response);
+        }
+      });
+    }
+
+    res.json({ results });
+  } catch (error) {
+    res.status(500).json({ error: "Scan process failed" });
+  }
+});
+
+// Export results to CSV
+app.get("/api/export", (req, res) => {
+  const results = req.query.results ? JSON.parse(req.query.results) : [];
+  const parser = new Parser({ fields: ["issue", "severity", "recommendation"] });
+  const csv = parser.parse(results);
+
+  fs.writeFileSync("compliance_report.csv", csv);
+  res.download("compliance_report.csv");
+});
+
+app.listen(PORT, () => {
+  console.log(`GDPR Compliance Scanner API running on http://localhost:${PORT}`);
+});
